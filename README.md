@@ -720,7 +720,37 @@ mysql-pv-claim   Bound    pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   2Gi        
 
 
 
-查看pv详细信息
+查看pvc详细配置
+
+```bash
+kubectl describe pvc mysql-pv-claim
+```
+
+
+
+```bash
+root@node1:~# kubectl describe pvc mysql-pv-claim
+Name:          mysql-pv-claim
+Namespace:     default
+StorageClass:  rook-ceph-block
+Status:        Bound
+Volume:        pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+Labels:        app=wordpress
+Annotations:   pv.kubernetes.io/bind-completed: yes
+               pv.kubernetes.io/bound-by-controller: yes
+               volume.beta.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+               volume.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+Finalizers:    [kubernetes.io/pvc-protection]
+Capacity:      2Gi
+Access Modes:  RWO
+VolumeMode:    Filesystem
+Used By:       wordpress-mysql-79966d6c5b-ps5m9
+Events:        <none>
+```
+
+
+
+查看pv详细配置
 
 ```bash
 root@node1:~/rook/cluster/examples/kubernetes# kubectl describe pv pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
@@ -883,6 +913,627 @@ www-web-2        Bound    pvc-83f6be05-4088-4847-b21d-4592bb71c497   1Gi        
 
 
 
+查看pvc配置细节
+
+```bash
+kubectl describe pvc www-web-0
+```
+
+
+
+```bash
+root@node1:~# kubectl describe pvc www-web-0
+Name:          www-web-0
+Namespace:     default
+StorageClass:  rook-ceph-block
+Status:        Bound
+Volume:        pvc-56697229-9847-4140-86cb-abd4a665fdc6
+Labels:        app=nginx
+Annotations:   pv.kubernetes.io/bind-completed: yes
+               pv.kubernetes.io/bound-by-controller: yes
+               volume.beta.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+               volume.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+Finalizers:    [kubernetes.io/pvc-protection]
+Capacity:      1Gi
+Access Modes:  RWO
+VolumeMode:    Filesystem
+Used By:       web-0
+Events:        <none>
+```
+
+
+
+查看pv配置细节
+
+```bash
+kubectl describe pv pvc-56697229-9847-4140-86cb-abd4a665fdc6
+```
+
+
+
+```bash
+root@node1:~# kubectl describe pv pvc-56697229-9847-4140-86cb-abd4a665fdc6
+Name:            pvc-56697229-9847-4140-86cb-abd4a665fdc6
+Labels:          <none>
+Annotations:     pv.kubernetes.io/provisioned-by: rook-ceph.rbd.csi.ceph.com
+Finalizers:      [kubernetes.io/pv-protection]
+StorageClass:    rook-ceph-block
+Status:          Bound
+Claim:           default/www-web-0
+Reclaim Policy:  Delete
+Access Modes:    RWO
+VolumeMode:      Filesystem
+Capacity:        1Gi
+Node Affinity:   <none>
+Message:
+Source:
+    Type:              CSI (a Container Storage Interface (CSI) volume source)
+    Driver:            rook-ceph.rbd.csi.ceph.com
+    FSType:            ext4
+    VolumeHandle:      0001-0009-rook-ceph-0000000000000002-0e31385e-7539-11ed-b76e-d6decc20daf2
+    ReadOnly:          false
+    VolumeAttributes:      clusterID=rook-ceph
+                           csi.storage.k8s.io/pv/name=pvc-56697229-9847-4140-86cb-abd4a665fdc6
+                           csi.storage.k8s.io/pvc/name=www-web-0
+                           csi.storage.k8s.io/pvc/namespace=default
+                           imageFeatures=layering
+                           imageFormat=2
+                           imageName=csi-vol-0e31385e-7539-11ed-b76e-d6decc20daf2
+                           journalPool=replicapool
+                           pool=replicapool
+                           storage.kubernetes.io/csiProvisionerIdentity=1670290455468-8081-rook-ceph.rbd.csi.ceph.com
+Events:                <none>
+```
+
+
+
+
+
 dashboard上进行查看
 
 ![image-20221206154530714](README.assets/image-20221206154530714.png)
+
+
+
+# 实现文件共享存储
+
+
+
+## 创建文件共享存储池和存储类
+
+查看文件存储池定义文件
+
+```
+```
+
+
+
+```yaml
+#################################################################################################################
+# Create a filesystem with settings with replication enabled for a production environment.
+# A minimum of 3 OSDs on different nodes are required in this example.
+#  kubectl create -f filesystem.yaml
+#################################################################################################################
+
+apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: myfs
+  namespace: rook-ceph # namespace:cluster
+spec:
+  # The metadata pool spec. Must use replication.
+  metadataPool: #元数据池
+    replicated:
+      size: 3
+      requireSafeReplicaSize: true
+    parameters:
+      # Inline compression mode for the data pool
+      # Further reference: https://docs.ceph.com/docs/nautilus/rados/configuration/bluestore-config-ref/#inline-compression
+      compression_mode:
+        none
+        # gives a hint (%) to Ceph in terms of expected consumption of the total cluster capacity of a given pool
+      # for more info: https://docs.ceph.com/docs/master/rados/operations/placement-groups/#specifying-expected-pool-size
+      #target_size_ratio: ".5"
+  # The list of data pool specs. Can use replication or erasure coding.
+  dataPools: #数据池
+    - failureDomain: host
+      replicated:
+        size: 3
+        # Disallow setting pool with replica 1, this could lead to data loss without recovery.
+        # Make sure you're *ABSOLUTELY CERTAIN* that is what you want
+        requireSafeReplicaSize: true
+      parameters:
+        # Inline compression mode for the data pool
+        # Further reference: https://docs.ceph.com/docs/nautilus/rados/configuration/bluestore-config-ref/#inline-compression
+        compression_mode:
+          none
+          # gives a hint (%) to Ceph in terms of expected consumption of the total cluster capacity of a given pool
+        # for more info: https://docs.ceph.com/docs/master/rados/operations/placement-groups/#specifying-expected-pool-size
+        #target_size_ratio: ".5"
+  # Whether to preserve filesystem after CephFilesystem CRD deletion
+  preserveFilesystemOnDelete: true
+  # The metadata service (mds) configuration
+  metadataServer:
+    # The number of active MDS instances
+    activeCount: 1
+    # Whether each active MDS instance will have an active standby with a warm metadata cache for faster failover.
+    # If false, standbys will be available, but will not have a warm cache.
+    activeStandby: true
+    # The affinity rules to apply to the mds deployment
+    placement:
+      #  nodeAffinity:
+      #    requiredDuringSchedulingIgnoredDuringExecution:
+      #      nodeSelectorTerms:
+      #      - matchExpressions:
+      #        - key: role
+      #          operator: In
+      #          values:
+      #          - mds-node
+      #  topologySpreadConstraints:
+      #  tolerations:
+      #  - key: mds-node
+      #    operator: Exists
+      #  podAffinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                    - rook-ceph-mds
+            # topologyKey: kubernetes.io/hostname will place MDS across different hosts
+            topologyKey: kubernetes.io/hostname
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - rook-ceph-mds
+              # topologyKey: */zone can be used to spread MDS across different AZ
+              # Use <topologyKey: failure-domain.beta.kubernetes.io/zone> in k8s cluster if your cluster is v1.16 or lower
+              # Use <topologyKey: topology.kubernetes.io/zone>  in k8s cluster is v1.17 or upper
+              topologyKey: topology.kubernetes.io/zone
+    # A key/value list of annotations
+    annotations:
+    #  key: value
+    # A key/value list of labels
+    labels:
+    #  key: value
+    resources:
+    # The requests and limits set here, allow the filesystem MDS Pod(s) to use half of one CPU core and 1 gigabyte of memory
+    #  limits:
+    #    cpu: "500m"
+    #    memory: "1024Mi"
+    #  requests:
+    #    cpu: "500m"
+    #    memory: "1024Mi"
+    # priorityClassName: my-priority-class
+  mirroring:
+    enabled: false
+```
+
+
+
+安装共享存储池
+
+```bash
+kubectl apply -f filesystem.yaml
+```
+
+
+
+查看共享池对应的pod
+
+```
+kubectl get pod -n rook-ceph | grep rook-ceph-mds
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph# kubectl get pod -n rook-ceph | grep rook-ceph-mds
+rook-ceph-mds-myfs-a-867b467bc9-v7h6d             1/1     Running     0          64s
+rook-ceph-mds-myfs-b-dff746db5-tqltl              1/1     Running     0          63s
+```
+
+
+
+从dashboard上进行查看
+
+![image-20221206173251488](README.assets/image-20221206173251488.png)
+
+
+
+![image-20221206174237266](README.assets/image-20221206174237266.png)
+
+查看存储类定义文件
+
+```bash
+/root/rook/cluster/examples/kubernetes/ceph/csi/cephfs
+```
+
+
+
+```bash
+nano storageclass.yaml
+```
+
+
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-cephfs
+provisioner: rook-ceph.cephfs.csi.ceph.com # driver:namespace:operator
+parameters:
+  # clusterID is the namespace where operator is deployed.
+  clusterID: rook-ceph # namespace:cluster
+
+  # CephFS filesystem name into which the volume shall be created
+  fsName: myfs
+
+  # Ceph pool into which the volume shall be created
+  # Required for provisionVolume: "true"
+  pool: myfs-data0 #数据池名称
+
+  # The secrets contain Ceph admin credentials. These are generated automatically by the operator
+  # in the same namespace as the cluster.
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph # namespace:cluster
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph # namespace:cluster
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph # namespace:cluster
+
+  # (optional) The driver can use either ceph-fuse (fuse) or ceph kernel client (kernel)
+  # If omitted, default volume mounter will be used - this is determined by probing for ceph-fuse
+  # or by setting the default mounter explicitly via --volumemounter command-line argument.
+  # mounter: kernel
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+mountOptions:
+  # uncomment the following line for debugging
+  #- debug
+```
+
+
+
+安装存储类
+
+```bash
+ kubectl apply -f storageclass.yaml
+```
+
+
+
+查看存储类型
+
+```bash
+kubectl get storageclass
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/cephfs# kubectl get storageclass
+NAME              PROVISIONER                     RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+rook-ceph-block   rook-ceph.rbd.csi.ceph.com      Delete          Immediate           true                   168m
+rook-cephfs       rook-ceph.cephfs.csi.ceph.com   Delete          Immediate           true                   119s
+```
+
+
+
+## 挂载实验
+
+
+
+创建配置文件
+
+```bash
+nano nginxcephfs.yaml
+```
+
+
+
+```bash
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginxcephfs
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+    name: web
+  selector:
+    app: nginx
+  type: ClusterIP
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: nginx-share-pvc # pvc名称
+spec:
+  storageClassName: rook-cephfs # 存储类型名称
+  accessModes:
+    - ReadWriteMany # 访问莫斯
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  selector:
+    matchLabels:
+      app: nginx # has to match .spec.template.metadata.labels
+  replicas: 3 # by default is 1
+  template:
+    metadata:
+      labels:
+        app: nginx # has to match .spec.selector.matchLabels
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html #挂接点
+      volumes:
+        - name: www
+          persistentVolumeClaim:
+            claimName: nginx-share-pvc # pvc名称
+```
+
+
+
+运行测试应用
+
+```bash
+kubectl apply -f nginxcephfs.yaml
+```
+
+
+
+观察应用的pod
+
+```bash
+kubectl get pod
+```
+
+
+
+```bash
+root@node1:~# kubectl get pod
+NAME                               READY   STATUS    RESTARTS   AGE
+web-55fbcf5b7d-4hdz8               1/1     Running   0          7m5s
+web-55fbcf5b7d-ftqnf               1/1     Running   0          7m5s
+web-55fbcf5b7d-ltxf9               1/1     Running   0          7m5s
+```
+
+
+
+观察pvc pv
+
+```
+kubectl get pvc
+```
+
+
+
+```
+kubectl get pv
+```
+
+
+
+```bash
+root@node1:~# kubectl get pvc
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+nginx-share-pvc   Bound    pvc-e16898a4-2571-4e92-971b-5c432a881d67   1Gi        RWX            rook-cephfs       8m16s
+root@node1:~# kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                     STORAGECLASS      REASON   AGE
+pvc-e16898a4-2571-4e92-971b-5c432a881d67   1Gi        RWX            Delete           Bound    default/nginx-share-pvc   rook-cephfs                8m27s
+```
+
+
+
+查看pvc详细配置
+
+```bash
+ kubectl describe pvc nginx-share-pvc
+```
+
+
+
+```bash
+root@node1:~# kubectl describe pvc nginx-share-pvc
+Name:          nginx-share-pvc
+Namespace:     default
+StorageClass:  rook-cephfs
+Status:        Bound
+Volume:        pvc-e16898a4-2571-4e92-971b-5c432a881d67
+Labels:        <none>
+Annotations:   pv.kubernetes.io/bind-completed: yes
+               pv.kubernetes.io/bound-by-controller: yes
+               volume.beta.kubernetes.io/storage-provisioner: rook-ceph.cephfs.csi.ceph.com
+               volume.kubernetes.io/storage-provisioner: rook-ceph.cephfs.csi.ceph.com
+Finalizers:    [kubernetes.io/pvc-protection]
+Capacity:      1Gi
+Access Modes:  RWX
+VolumeMode:    Filesystem
+Used By:       web-55fbcf5b7d-4hdz8
+               web-55fbcf5b7d-ftqnf
+               web-55fbcf5b7d-ltxf9
+Events:
+  Type    Reason                 Age   From                                                                                                              Message
+  ----    ------                 ----  ----                                                                                                              -------
+  Normal  Provisioning           11m   rook-ceph.cephfs.csi.ceph.com_csi-cephfsplugin-provisioner-7594b68bcb-wwn2j_adc19648-4b99-4a53-be00-1a414fa79104  External provisioner is provisioning volume for claim "default/nginx-share-pvc"
+  Normal  ExternalProvisioning   11m   persistentvolume-controller                                                                                       waiting for a volume to be created, either by external provisioner "rook-ceph.cephfs.csi.ceph.com" or manually created by system administrator
+  Normal  ProvisioningSucceeded  11m   rook-ceph.cephfs.csi.ceph.com_csi-cephfsplugin-provisioner-7594b68bcb-wwn2j_adc19648-4b99-4a53-be00-1a414fa79104  Successfully provisioned volume pvc-e16898a4-2571-4e92-971b-5c432a881d67
+```
+
+​	重点关注上述输出中的`Used By`字段
+
+
+
+查看pv详细配置
+
+```bash
+kubectl describe pv pvc-e16898a4-2571-4e92-971b-5c432a881d67
+```
+
+
+
+```bash
+root@node1:~# kubectl describe pv pvc-e16898a4-2571-4e92-971b-5c432a881d67
+Name:            pvc-e16898a4-2571-4e92-971b-5c432a881d67
+Labels:          <none>
+Annotations:     pv.kubernetes.io/provisioned-by: rook-ceph.cephfs.csi.ceph.com
+Finalizers:      [kubernetes.io/pv-protection]
+StorageClass:    rook-cephfs
+Status:          Bound
+Claim:           default/nginx-share-pvc
+Reclaim Policy:  Delete
+Access Modes:    RWX
+VolumeMode:      Filesystem
+Capacity:        1Gi
+Node Affinity:   <none>
+Message:
+Source:
+    Type:              CSI (a Container Storage Interface (CSI) volume source)
+    Driver:            rook-ceph.cephfs.csi.ceph.com
+    FSType:
+    VolumeHandle:      0001-0009-rook-ceph-0000000000000001-e1f4203e-754b-11ed-9ab3-fa886841851a
+    ReadOnly:          false
+    VolumeAttributes:      clusterID=rook-ceph
+                           fsName=myfs
+                           pool=myfs-data0
+                           storage.kubernetes.io/csiProvisionerIdentity=1670290454522-8081-rook-ceph.cephfs.csi.ceph.com
+                           subvolumeName=csi-vol-e1f4203e-754b-11ed-9ab3-fa886841851a
+                           subvolumePath=/volumes/csi/csi-vol-e1f4203e-754b-11ed-9ab3-fa886841851a/5c1e32b1-b90c-4022-81f0-de0fe9194a13
+Events:                <none>
+```
+
+​	重点关注上述输出中 `subvolumePath`   和`subvolumeName`字段
+
+
+
+在dashboard中进行观察
+
+![image-20221206181455134](README.assets/image-20221206181455134.png)
+
+
+
+![image-20221206182508494](README.assets/image-20221206182508494.png)
+
+查看服务
+
+```
+kubectl get svc
+```
+
+
+
+```bash
+root@node1:~# kubectl get svc
+NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+kubernetes        ClusterIP   10.96.0.1       <none>        443/TCP    227d
+nginxcephfs       ClusterIP   10.108.91.118   <none>        80/TCP     13m
+```
+
+
+
+访问服务
+
+```bash
+ curl 10.108.91.118
+```
+
+
+
+```bash
+root@node1:~# curl 10.108.91.118
+<html>
+<head><title>403 Forbidden</title></head>
+<body>
+<center><h1>403 Forbidden</h1></center>
+<hr><center>nginx/1.21.5</center>
+</body>
+</html>
+```
+
+
+
+在某一个pod中修改index.html文件
+
+```bash
+kubectl exec -it web-55fbcf5b7d-4hdz8 -- bash
+```
+
+
+
+```bash
+ cd /usr/share/nginx/html
+```
+
+
+
+```bash
+echo "hello rook,i am cloudzun">index.html
+```
+
+
+
+```bash
+root@node1:~# kubectl exec -it web-55fbcf5b7d-4hdz8 -- bash
+root@web-55fbcf5b7d-4hdz8:/# cd /usr/share/nginx/html
+root@web-55fbcf5b7d-4hdz8:/usr/share/nginx/html# ls
+root@web-55fbcf5b7d-4hdz8:/usr/share/nginx/html# echo "hello rook,i am cloudzun">index.html
+root@web-55fbcf5b7d-4hdz8:/usr/share/nginx/html# exit
+```
+
+
+
+在其他pod中查看修改过后的结果
+
+```bash
+ kubectl exec -it web-55fbcf5b7d-ftqnf -- cat /usr/share/nginx/html/index.html
+```
+
+
+
+```bash
+root@node1:~# kubectl exec -it web-55fbcf5b7d-ftqnf -- cat /usr/share/nginx/html/index.html
+hello rook,i am cloudzun
+root@node1:~# kubectl exec -it web-55fbcf5b7d-ltxf9 -- cat /usr/share/nginx/html/index.html
+hello rook,i am cloudzun
+```
+
+
+
+重新访问服务
+
+```
+curl 10.108.91.118
+```
+
+
+
+```bash
+root@node1:~# curl 10.108.91.118
+hello rook,i am cloudzun
+```
+
