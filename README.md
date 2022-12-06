@@ -72,7 +72,7 @@ nano operator.yaml
 
 使用国内镜像
 
-```
+```bash
   # these images to the desired release of the CSI driver.
   # ROOK_CSI_CEPH_IMAGE: "quay.io/cephcsi/cephcsi:v3.3.1"
   # ROOK_CSI_REGISTRAR_IMAGE: "k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.0.1"
@@ -84,7 +84,7 @@ nano operator.yaml
 
 替换为
 
-```
+```bash
 ROOK_CSI_REGISTRAR_IMAGE: "registry.cn-beijing.aliyuncs.com/dotbalo/csi-node-driver-registrar:v2.0.1"
 ROOK_CSI_RESIZER_IMAGE: "registry.cn-beijing.aliyuncs.com/dotbalo/csi-resizer:v1.0.1"
 ROOK_CSI_PROVISIONER_IMAGE: "registry.cn-beijing.aliyuncs.com/dotbalo/csi-provisioner:v2.0.4"
@@ -329,7 +329,7 @@ kubectl -n rook-ceph exec -it deploy/rook-ceph-tools -- bash
 
 
 
-```
+```bash
 ceph status
 ceph osd status
 ceph df
@@ -477,3 +477,412 @@ root@node1:~/rook/cluster/examples/kubernetes/ceph# kubectl -n rook-ceph exec -i
 
 
 ![image-20221206103650211](README.assets/image-20221206103650211.png)
+
+
+
+
+
+# 实现块存储
+
+## 创建存储池和存储类
+
+
+
+查看rbd 存储类定义文件
+
+```yaml
+nano /csi/rbd/storageclass.yaml
+```
+
+
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool #存储池名称
+  namespace: rook-ceph
+spec:
+  failureDomain: host # 容错域级别
+  replicated:
+    size: 3 #副本数
+    # Disallow setting pool with replica 1, this could lead to data loss without recovery.
+    # Make sure you're *ABSOLUTELY CERTAIN* that is what you want
+    requireSafeReplicaSize: true
+    # gives a hint (%) to Ceph in terms of expected consumption of the total cluster capacity of a given pool
+    # for more info: https://docs.ceph.com/docs/master/rados/operations/placement-groups/#specifying-expected-pool-size
+    #targetSizeRatio: .5
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-ceph-block #存储类名称
+# Change "rook-ceph" provisioner prefix to match the operator namespace if needed
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  # clusterID is the namespace where the rook cluster is running
+  # If you change this namespace, also change the namespace below where the secret namespaces are defined
+  clusterID: rook-ceph # namespace:cluster
+
+  # If you want to use erasure coded pool with RBD, you need to create
+  # two pools. one erasure coded and one replicated.
+  # You need to specify the replicated pool here in the `pool` parameter, it is
+  # used for the metadata of the images.
+  # The erasure coded pool must be set as the `dataPool` parameter below.
+  #dataPool: ec-data-pool
+  pool: replicapool #存储类对应的存储池
+
+  # (optional) mapOptions is a comma-separated list of map options.
+  # For krbd options refer
+  # https://docs.ceph.com/docs/master/man/8/rbd/#kernel-rbd-krbd-options
+  # For nbd options refer
+  # https://docs.ceph.com/docs/master/man/8/rbd-nbd/#options
+  # mapOptions: lock_on_read,queue_depth=1024
+
+  # (optional) unmapOptions is a comma-separated list of unmap options.
+  # For krbd options refer
+  # https://docs.ceph.com/docs/master/man/8/rbd/#kernel-rbd-krbd-options
+  # For nbd options refer
+  # https://docs.ceph.com/docs/master/man/8/rbd-nbd/#options
+  # unmapOptions: force
+
+  # RBD image format. Defaults to "2".
+  imageFormat: "2"
+
+  # RBD image features. Available for imageFormat: "2". CSI RBD currently supports only `layering` feature.
+  imageFeatures: layering
+
+  # The secrets contain Ceph admin credentials. These are generated automatically by the operator
+  # in the same namespace as the cluster.
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph # namespace:cluster
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph # namespace:cluster
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph # namespace:cluster
+  # Specify the filesystem type of the volume. If not specified, csi-provisioner
+  # will set default as `ext4`. Note that `xfs` is not recommended due to potential deadlock
+  # in hyperconverged settings where the volume is mounted on the same node as the osds.
+  csi.storage.k8s.io/fstype: ext4
+# uncomment the following to use rbd-nbd as mounter on supported nodes
+# **IMPORTANT**: If you are using rbd-nbd as the mounter, during upgrade you will be hit a ceph-csi
+# issue that causes the mount to be disconnected. You will need to follow special upgrade steps
+# to restart your application pods. Therefore, this option is not recommended.
+#mounter: rbd-nbd
+allowVolumeExpansion: true
+reclaimPolicy: Delete #回收策略
+```
+
+
+
+创建存储池和存储类
+
+```bash
+kubectl apply -f /csi/rbd/storageclass.yaml
+```
+
+
+
+查看存储池和存储类
+
+```bash
+kubectl get CephBlockPool -n rook-ceph
+```
+
+
+
+```bash
+kubectl get storageclass
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get CephBlockPool -n rook-ceph
+NAME          AGE
+replicapool   61s
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get storageclass
+NAME              PROVISIONER                  RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+rook-ceph-block   rook-ceph.rbd.csi.ceph.com   Delete          Immediate           true                   78s
+```
+
+
+
+在dashboard上进行查看
+
+![image-20221206145529601](README.assets/image-20221206145529601.png)
+
+
+
+## 挂载测试1: MySQL 数据库存储的挂载
+
+查看mysql示例配置文件
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-mysql
+  labels:
+    app: wordpress
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: wordpress
+    tier: mysql
+  clusterIP: None
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim #PVC名称
+  labels:
+    app: wordpress
+spec:
+  storageClassName: rook-ceph-block #存储类型
+  accessModes:
+    - ReadWriteOnce #访问模式
+  resources:
+    requests:
+      storage: 20Gi #存储大小,建议修改为2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress-mysql
+  labels:
+    app: wordpress
+    tier: mysql
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: mysql
+    spec:
+      containers:
+        - image: mysql:5.6
+          name: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: changeme
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql #挂接点
+      volumes:
+        - name: mysql-persistent-storage #数据卷
+          persistentVolumeClaim:
+            claimName: mysql-pv-claim #pvc名称
+```
+
+
+
+安装mysql
+
+```bash
+kubectl apply -f mysql.yaml
+```
+
+
+
+查看pv pvc
+
+```
+kubectl get pv
+```
+
+
+
+```
+kubectl get pvc
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes# kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                    STORAGECLASS      REASON   AGE
+pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   2Gi        RWO            Delete           Bound    default/mysql-pv-claim   rook-ceph-block            2m12s
+root@node1:~/rook/cluster/examples/kubernetes# kubectl get pvc
+NAME             STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+mysql-pv-claim   Bound    pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   2Gi        RWO            rook-ceph-block   2m21s
+```
+
+
+
+查看pv详细信息
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes# kubectl describe pv pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+Name:            pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+Labels:          <none>
+Annotations:     pv.kubernetes.io/provisioned-by: rook-ceph.rbd.csi.ceph.com
+Finalizers:      [kubernetes.io/pv-protection]
+StorageClass:    rook-ceph-block
+Status:          Bound
+Claim:           default/mysql-pv-claim
+Reclaim Policy:  Delete
+Access Modes:    RWO
+VolumeMode:      Filesystem
+Capacity:        2Gi
+Node Affinity:   <none>
+Message:
+Source:
+    Type:              CSI (a Container Storage Interface (CSI) volume source)
+    Driver:            rook-ceph.rbd.csi.ceph.com
+    FSType:            ext4
+    VolumeHandle:      0001-0009-rook-ceph-0000000000000002-e537da68-7535-11ed-b76e-d6decc20daf2
+    ReadOnly:          false
+    VolumeAttributes:      clusterID=rook-ceph
+                           csi.storage.k8s.io/pv/name=pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+                           csi.storage.k8s.io/pvc/name=mysql-pv-claim
+                           csi.storage.k8s.io/pvc/namespace=default
+                           imageFeatures=layering
+                           imageFormat=2
+                           imageName=csi-vol-e537da68-7535-11ed-b76e-d6decc20daf2
+                           journalPool=replicapool
+                           pool=replicapool
+                           storage.kubernetes.io/csiProvisionerIdentity=1670290455468-8081-rook-ceph.rbd.csi.ceph.com
+Events:                <none>
+```
+
+​	注意观察上述输出的`VolumeHandle`值
+
+
+
+从dashboard上进行检查
+
+![image-20221206152607267](README.assets/image-20221206152607267.png)
+
+
+
+
+
+## 挂载测试2: StatefulSet应用的挂载
+
+创建配置文件
+
+```bash
+nano nginxsts.yaml
+```
+
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None
+  selector:
+    app: nginx
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  selector:
+    matchLabels:
+      app: nginx # has to match .spec.template.metadata.labels
+  serviceName: "nginx"
+  replicas: 3 # by default is 1
+  template:
+    metadata:
+      labels:
+        app: nginx # has to match .spec.selector.matchLabels
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: nginx
+        image: nginx 
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: www
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "rook-ceph-block"
+      resources:
+        requests:
+          storage: 1Gi
+```
+
+
+
+安装sts
+
+```bash
+kubectl apply -f nginxsts.yaml
+```
+
+
+
+查看pod
+
+```
+kubectl get pod | grep web
+```
+
+
+
+```bash
+root@node1:~# kubectl get pod | grep web
+web-0                              1/1     Running   0          2m39s
+web-1                              1/1     Running   0          2m9s
+web-2                              1/1     Running   0          100s
+```
+
+
+
+查看pv pvc
+
+```bash
+kubectl get pv | grep web
+```
+
+
+
+```bash
+kubectl get pvc | grep web
+```
+
+
+
+```bash
+root@node1:~# kubectl get pv | grep web
+pvc-56697229-9847-4140-86cb-abd4a665fdc6   1Gi        RWO            Delete           Bound    default/www-web-0        rook-ceph-block            3m21s
+pvc-83f6be05-4088-4847-b21d-4592bb71c497   1Gi        RWO            Delete           Bound    default/www-web-2        rook-ceph-block            2m22s
+pvc-c90c79e7-3236-4bac-b042-e0eaef2833d9   1Gi        RWO            Delete           Bound    default/www-web-1        rook-ceph-block            2m52s
+root@node1:~# kubectl get pvc | grep web
+www-web-0        Bound    pvc-56697229-9847-4140-86cb-abd4a665fdc6   1Gi        RWO            rook-ceph-block   3m33s
+www-web-1        Bound    pvc-c90c79e7-3236-4bac-b042-e0eaef2833d9   1Gi        RWO            rook-ceph-block   3m3s
+www-web-2        Bound    pvc-83f6be05-4088-4847-b21d-4592bb71c497   1Gi        RWO            rook-ceph-block   2m34s
+```
+
+
+
+dashboard上进行查看
+
+![image-20221206154530714](README.assets/image-20221206154530714.png)
