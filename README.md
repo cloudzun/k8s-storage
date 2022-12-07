@@ -1228,9 +1228,7 @@ rook-cephfs       rook-ceph.cephfs.csi.ceph.com   Delete          Immediate     
 
 
 
-## 挂载实验
-
-
+## 挂载测试: 多web应用共享存储
 
 创建配置文件
 
@@ -1240,7 +1238,7 @@ nano nginxcephfs.yaml
 
 
 
-```bash
+```yaml
 apiVersion: v1
 kind: Service
 metadata:
@@ -1536,4 +1534,248 @@ curl 10.108.91.118
 root@node1:~# curl 10.108.91.118
 hello rook,i am cloudzun
 ```
+
+
+
+# PVC的扩容
+
+
+
+## 扩容文件共享型存储
+
+查看存储类型细节
+
+```bash
+kubectl describe sc rook-cephfs
+```
+
+
+
+```bash
+root@node1:~# kubectl describe sc rook-cephfs
+Name:            rook-cephfs
+IsDefaultClass:  No
+Annotations:     kubectl.kubernetes.io/last-applied-configuration={"allowVolumeExpansion":true,"apiVersion":"storage.k8s.io/v1","kind":"StorageClass","metadata":{"annotations":{},"name":"rook-cephfs"},"mountOptions":null,"parameters":{"clusterID":"rook-ceph","csi.storage.k8s.io/controller-expand-secret-name":"rook-csi-cephfs-provisioner","csi.storage.k8s.io/controller-expand-secret-namespace":"rook-ceph","csi.storage.k8s.io/node-stage-secret-name":"rook-csi-cephfs-node","csi.storage.k8s.io/node-stage-secret-namespace":"rook-ceph","csi.storage.k8s.io/provisioner-secret-name":"rook-csi-cephfs-provisioner","csi.storage.k8s.io/provisioner-secret-namespace":"rook-ceph","fsName":"myfs","pool":"myfs-data0"},"provisioner":"rook-ceph.cephfs.csi.ceph.com","reclaimPolicy":"Delete"}
+
+Provisioner:           rook-ceph.cephfs.csi.ceph.com
+Parameters:            clusterID=rook-ceph,csi.storage.k8s.io/controller-expand-secret-name=rook-csi-cephfs-provisioner,csi.storage.k8s.io/controller-expand-secret-namespace=rook-ceph,csi.storage.k8s.io/node-stage-secret-name=rook-csi-cephfs-node,csi.storage.k8s.io/node-stage-secret-namespace=rook-ceph,csi.storage.k8s.io/provisioner-secret-name=rook-csi-cephfs-provisioner,csi.storage.k8s.io/provisioner-secret-namespace=rook-ceph,fsName=myfs,pool=myfs-data0
+AllowVolumeExpansion:  True
+MountOptions:          <none>
+ReclaimPolicy:         Delete
+VolumeBindingMode:     Immediate
+Events:                <none>
+```
+
+重点关注上述输出中的 `AllowVolumeExpansion:  True` 字段
+
+
+
+修改pvc配置
+
+```bash
+KUBE_EDITOR="nano" kubectl edit pvc nginx-share-pvc
+```
+
+
+
+```yaml
+# Please edit the object below. Lines beginning with a '#' will be ignored,
+# and an empty file will abort the edit. If an error occurs while saving this file will be
+# reopened with the relevant failures.
+#
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"nginx-share-pvc","namespace":"default"},"spec":{"accessModes":["ReadWriteMany"],"resour>
+    pv.kubernetes.io/bind-completed: "yes"
+    pv.kubernetes.io/bound-by-controller: "yes"
+    volume.beta.kubernetes.io/storage-provisioner: rook-ceph.cephfs.csi.ceph.com
+    volume.kubernetes.io/storage-provisioner: rook-ceph.cephfs.csi.ceph.com
+  creationTimestamp: "2022-12-06T09:53:49Z"
+  finalizers:
+  - kubernetes.io/pvc-protection
+  name: nginx-share-pvc
+  namespace: default
+  resourceVersion: "98161"
+  uid: e16898a4-2571-4e92-971b-5c432a881d67
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi #修改此处的值 1Gi-->2Gi
+  storageClassName: rook-cephfs
+  volumeMode: Filesystem
+  volumeName: pvc-e16898a4-2571-4e92-971b-5c432a881d67
+status:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 1Gi
+  phase: Bound
+```
+
+
+
+等待3~5分钟之后,查看pvc和pv
+
+```bash
+kubectl get pvc | grep nginx-share-pvc
+```
+
+
+
+```bash
+kubectl get pv | grep nginx-share-pvc
+```
+
+
+
+```bash
+root@node1:~# kubectl get pvc | grep nginx-share-pvc
+nginx-share-pvc   Bound    pvc-e16898a4-2571-4e92-971b-5c432a881d67   2Gi        RWX            rook-cephfs       15h
+root@node1:~# kubectl get pv | grep nginx-share-pvc
+pvc-e16898a4-2571-4e92-971b-5c432a881d67   2Gi        RWX            Delete           Bound    default/nginx-share-pvc   rook-cephfs                15h
+```
+
+
+
+到pod层面进行查看
+
+```bash
+ kubectl exec -it web-55fbcf5b7d-4hdz8 -- bash
+```
+
+
+
+```bash
+df -Th
+```
+
+
+
+```bash
+root@web-55fbcf5b7d-4hdz8:/# df -Th
+Filesystem                                                                                                                                                 Type     Size  Used Avail Use% Mounted on
+overlay                                                                                                                                                    overlay  125G  9.3G  110G   8% /
+tmpfs                                                                                                                                                      tmpfs     64M     0   64M   0% /dev
+tmpfs                                                                                                                                                      tmpfs    3.9G     0  3.9G   0% /sys/fs/cgroup
+/dev/sda1                                                                                                                                                  ext4     125G  9.3G  110G   8% /etc/hosts
+shm                                                                                                                                                        tmpfs     64M     0   64M   0% /dev/shm
+10.101.130.249:6789,10.106.237.229:6789,10.102.106.129:6789:/volumes/csi/csi-vol-e1f4203e-754b-11ed-9ab3-fa886841851a/5c1e32b1-b90c-4022-81f0-de0fe9194a13 ceph     2.0G     0  2.0G   0% /usr/share/nginx/html
+tmpfs                                                                                                                                                      tmpfs    7.7G   12K  7.7G   1% /run/secrets/kubernetes.io/serviceaccount
+tmpfs                                                                                                                                                      tmpfs    3.9G     0  3.9G   0% /proc/acpi
+tmpfs                                                                                                                                                      tmpfs    3.9G     0  3.9G   0% /proc/scsi
+tmpfs                                                                                                                                                      tmpfs    3.9G     0  3.9G   0% /sys/firmware
+```
+
+观察第8行中
+
+
+
+## 扩展块存储
+
+```bash
+KUBE_EDITOR="nano" kubectl edit pvc mysql-pv-claim
+```
+
+
+
+```yaml
+# Please edit the object below. Lines beginning with a '#' will be ignored,
+# and an empty file will abort the edit. If an error occurs while saving this file will be
+# reopened with the relevant failures.
+#
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"labels":{"app":"wordpress"},"name":"mysql-pv-claim","namespace":"default"},"spec":{"accessMode>
+    pv.kubernetes.io/bind-completed: "yes"
+    pv.kubernetes.io/bound-by-controller: "yes"
+    volume.beta.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+    volume.kubernetes.io/storage-provisioner: rook-ceph.rbd.csi.ceph.com
+  creationTimestamp: "2022-12-06T07:16:25Z"
+  finalizers:
+  - kubernetes.io/pvc-protection
+  labels:
+    app: wordpress
+  name: mysql-pv-claim
+  namespace: default
+  resourceVersion: "155056"
+  uid: 1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi #修改此处的值 2Gi-->4Gi
+  storageClassName: rook-ceph-block
+  volumeMode: Filesystem
+  volumeName: pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d
+status:
+  accessModes:
+  - ReadWriteOnce
+  capacity:
+    storage: 2Gi
+  conditions:
+  - lastProbeTime: null
+    lastTransitionTime: "2022-12-07T01:20:41Z"
+    status: "True"
+  phase: Bound
+```
+
+
+
+等待3~5分钟之后,查看pvc和pv
+
+```
+kubectl get pvc | grep mysql-pv-claim
+kubectl get pv | grep mysql-pv-claim
+```
+
+
+
+```bash
+root@node1:~# kubectl get pvc | grep mysql-pv-claim
+mysql-pv-claim    Bound    pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   4Gi        RWO            rook-ceph-block   18h
+root@node1:~# kubectl get pv | grep mysql-pv-claim
+pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   4Gi        RWO            Delete           Bound    default/mysql-pv-claim    rook-ceph-block            18h
+```
+
+
+
+到pod层面进行查看
+
+```bash
+kubectl exec -it wordpress-mysql-79966d6c5b-ps5m9 -- bash
+```
+
+
+
+```bash
+df -Th
+```
+
+
+
+```bash
+root@wordpress-mysql-79966d6c5b-ps5m9:/# df -Th
+Filesystem     Type     Size  Used Avail Use% Mounted on
+overlay        overlay  125G  9.3G  110G   8% /
+tmpfs          tmpfs     64M     0   64M   0% /dev
+tmpfs          tmpfs    3.9G     0  3.9G   0% /sys/fs/cgroup
+/dev/sda1      ext4     125G  9.3G  110G   8% /etc/hosts
+shm            tmpfs     64M     0   64M   0% /dev/shm
+/dev/rbd0      ext4     3.9G  124M  3.8G   4% /var/lib/mysql
+tmpfs          tmpfs    7.7G   12K  7.7G   1% /run/secrets/kubernetes.io/serviceaccount
+tmpfs          tmpfs    3.9G     0  3.9G   0% /proc/acpi
+tmpfs          tmpfs    3.9G     0  3.9G   0% /proc/scsi
+tmpfs          tmpfs    3.9G     0  3.9G   0% /sys/firmware
+```
+
+观察第8行
 
