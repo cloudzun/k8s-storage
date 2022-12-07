@@ -2192,3 +2192,117 @@ root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl exec -it che
 test for snapshot from cloudzun
 ```
 
+
+
+# 实现PVC克隆
+
+修改克隆配置文件
+
+```bash
+nano pvc-clone.yaml
+```
+
+
+
+```yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rbd-pvc-clone
+spec:
+  storageClassName: rook-ceph-block
+  dataSource:
+    name: mysql-pv-claim #克隆目标卷名称
+    kind: PersistentVolumeClaim
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi #容量不得小于目标卷
+```
+
+
+
+创建克隆
+
+```bash
+kubectl apply -f pvc-clone.yaml
+```
+
+
+
+查看pvc列表
+
+```bash
+kubectl get pvc
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get pvc
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+mysql-pv-claim    Bound    pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   4Gi        RWO            rook-ceph-block   22h
+rbd-pvc-clone     Bound    pvc-e9258c32-0ddf-4ea7-a413-ea8bf892f584   4Gi        RWO            rook-ceph-block   9s
+rbd-pvc-restore   Bound    pvc-5a2a3d4a-f7b1-4013-9354-8f1f163c4f98   4Gi        RWO            rook-ceph-block   100m
+```
+
+
+
+查看pv信息
+
+```bash
+kubectl describe pv  pvc-e9258c32-0ddf-4ea7-a413-ea8bf892f584
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl describe pv  pvc-e9258c32-0ddf-4ea7-a413-ea8bf892f584
+Name:            pvc-e9258c32-0ddf-4ea7-a413-ea8bf892f584
+Labels:          <none>
+Annotations:     pv.kubernetes.io/provisioned-by: rook-ceph.rbd.csi.ceph.com
+Finalizers:      [kubernetes.io/pv-protection]
+StorageClass:    rook-ceph-block
+Status:          Bound
+Claim:           default/rbd-pvc-clone
+Reclaim Policy:  Delete
+Access Modes:    RWO
+VolumeMode:      Filesystem
+Capacity:        4Gi
+Node Affinity:   <none>
+Message:
+Source:
+    Type:              CSI (a Container Storage Interface (CSI) volume source)
+    Driver:            rook-ceph.rbd.csi.ceph.com
+    FSType:            ext4
+    VolumeHandle:      0001-0009-rook-ceph-0000000000000002-7f9a99e9-75ef-11ed-b76e-d6decc20daf2
+    ReadOnly:          false
+    VolumeAttributes:      clusterID=rook-ceph
+                           csi.storage.k8s.io/pv/name=pvc-e9258c32-0ddf-4ea7-a413-ea8bf892f584
+                           csi.storage.k8s.io/pvc/name=rbd-pvc-clone
+                           csi.storage.k8s.io/pvc/namespace=default
+                           imageFeatures=layering
+                           imageFormat=2
+                           imageName=csi-vol-7f9a99e9-75ef-11ed-b76e-d6decc20daf2
+                           journalPool=replicapool
+                           pool=replicapool
+                           storage.kubernetes.io/csiProvisionerIdentity=1670368239097-8081-rook-ceph.rbd.csi.ceph.com
+Events:                <none>
+```
+
+特别关注以上输出的`VolumeHandle:` 属性
+
+
+
+在dashboard中进行查看
+
+![image-20221207133400718](README.assets/image-20221207133400718.png)
+
+
+
+克隆验证及恢复参照快照部分
+
+
+
