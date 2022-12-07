@@ -1779,3 +1779,416 @@ tmpfs          tmpfs    3.9G     0  3.9G   0% /sys/firmware
 
 观察第8行
 
+
+
+# 实现存储快照
+
+
+
+## 安装snapshot控制器
+
+下载repo执行安装
+
+```bash
+git clone https://github.com/dotbalo/k8s-ha-install.git
+cd /root/k8s-ha-install/
+git checkout manual-installation-v1.20.x
+kubectl apply -f snapshotter/ -n kube-system
+```
+
+
+
+查看安装情况
+
+```bash
+kubectl get pod -n kube-system | grep snapshot
+```
+
+
+
+```bash
+root@node1:~/k8s-ha-install# kubectl get pod -n kube-system | grep snapshot
+snapshot-controller-0                     1/1     Running   0             53s
+```
+
+
+
+创建块存储快照类
+
+```bash
+ kubectl apply -f snapshotclass.yaml
+```
+
+
+
+查看存储快照类
+
+```bash
+kubectl get VolumeSnapshotClass
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get VolumeSnapshotClass
+NAME                      DRIVER                       DELETIONPOLICY   AGE
+csi-rbdplugin-snapclass   rook-ceph.rbd.csi.ceph.com   Delete           73s
+```
+
+
+
+查看存储快照类详细配置
+
+```bash
+kubectl describe VolumeSnapshotClass csi-rbdplugin-snapclass
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl describe VolumeSnapshotClass csi-rbdplugin-snapclass
+Name:             csi-rbdplugin-snapclass
+Namespace:
+Labels:           <none>
+Annotations:      <none>
+API Version:      snapshot.storage.k8s.io/v1
+Deletion Policy:  Delete
+Driver:           rook-ceph.rbd.csi.ceph.com
+Kind:             VolumeSnapshotClass
+Metadata:
+  Creation Timestamp:  2022-12-07T02:49:40Z
+  Generation:          1
+  Managed Fields:
+    API Version:  snapshot.storage.k8s.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:deletionPolicy:
+      f:driver:
+      f:metadata:
+        f:annotations:
+          .:
+          f:kubectl.kubernetes.io/last-applied-configuration:
+      f:parameters:
+        .:
+        f:clusterID:
+        f:csi.storage.k8s.io/snapshotter-secret-name:
+        f:csi.storage.k8s.io/snapshotter-secret-namespace:
+    Manager:         kubectl-client-side-apply
+    Operation:       Update
+    Time:            2022-12-07T02:49:40Z
+  Resource Version:  171214
+  UID:               60892e32-3b04-4ca8-9f54-f6e091761dc2
+Parameters:
+  Cluster ID:                                       rook-ceph
+  csi.storage.k8s.io/snapshotter-secret-name:       rook-csi-rbd-provisioner
+  csi.storage.k8s.io/snapshotter-secret-namespace:  rook-ceph
+Events:                                             <none>
+```
+
+
+
+## 创建快照
+
+在MySQL Pod中填充实验数据
+
+```bash
+kubectl exec -it wordpress-mysql-79966d6c5b-ps5m9 --bash
+```
+
+
+
+```bash
+cd /var/lib/mysql
+mkdir test_snapshot
+echo "test for snapshot from cloudzun">test_snapshot/haha.txt
+cat test_snapshot/haha.txt
+exit
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl exec -it wordpress-mysql-79966d6c5b-ps5m9 -- bash
+root@wordpress-mysql-79966d6c5b-ps5m9:/# cd /var/lib/mysql
+root@wordpress-mysql-79966d6c5b-ps5m9:/var/lib/mysql# mkdir test_snapshot
+root@wordpress-mysql-79966d6c5b-ps5m9:/var/lib/mysql# echo "test for snapshot from cloudzun">test_snapshot/haha.txt
+root@wordpress-mysql-79966d6c5b-ps5m9:/var/lib/mysql# cat test_snapshot/haha.txt
+test for snapshot from cloudzun
+root@wordpress-mysql-79966d6c5b-ps5m9:/var/lib/mysql#exit
+exit
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd#
+```
+
+
+
+打开快照配置文件
+
+```bash
+nano snapshot.yaml
+```
+
+
+
+```bash
+---
+# 1.17 <= K8s <= v1.19
+# apiVersion: snapshot.storage.k8s.io/v1beta1
+# K8s >= v1.20
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: rbd-pvc-snapshot
+spec:
+  volumeSnapshotClassName: csi-rbdplugin-snapclass
+  source:
+    persistentVolumeClaimName: mysql-pv-claim #修改此处的pvc名称为需要拍摄快照的pvc
+```
+
+
+
+创建快照
+
+```bash
+kubectl apply -f snapshot.yaml
+```
+
+
+
+查看快照
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get volumesnapshot
+NAME               READYTOUSE   SOURCEPVC        SOURCESNAPSHOTCONTENT   RESTORESIZE   SNAPSHOTCLASS             SNAPSHOTCONTENT                                    CREATIONTIME   AGE
+rbd-pvc-snapshot   true         mysql-pv-claim                           4Gi           csi-rbdplugin-snapclass   snapcontent-df031985-0595-42c3-914c-ced6c8721d48   3s             80s
+
+```
+
+
+
+查看`volumesnapshotcontent`详细配置信息
+
+```bash
+ kubectl get  volumesnapshotcontent
+ 
+ kubectl describe volumesnapshotcontent snapcontent-df031985-0595-42c3-914c-ced6c8721d48
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get  volumesnapshotcontent
+NAME                                               READYTOUSE   RESTORESIZE   DELETIONPOLICY   DRIVER                       VOLUMESNAPSHOTCLASS       VOLUMESNAPSHOT     AGE
+snapcontent-df031985-0595-42c3-914c-ced6c8721d48   true         4294967296    Delete           rook-ceph.rbd.csi.ceph.com   csi-rbdplugin-snapclass   rbd-pvc-snapshot   12m
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl describe volumesnapshotcontent snapcontent-df031985-0595-42c3-914c-ced6c8721d48
+Name:         snapcontent-df031985-0595-42c3-914c-ced6c8721d48
+Namespace:
+Labels:       <none>
+Annotations:  snapshot.storage.kubernetes.io/deletion-secret-name: rook-csi-rbd-provisioner
+              snapshot.storage.kubernetes.io/deletion-secret-namespace: rook-ceph
+API Version:  snapshot.storage.k8s.io/v1
+Kind:         VolumeSnapshotContent
+Metadata:
+  Creation Timestamp:  2022-12-07T03:17:14Z
+  Finalizers:
+    snapshot.storage.kubernetes.io/volumesnapshotcontent-bound-protection
+  Generation:  1
+  Managed Fields:
+    API Version:  snapshot.storage.k8s.io/v1beta1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .:
+          f:snapshot.storage.kubernetes.io/deletion-secret-name:
+          f:snapshot.storage.kubernetes.io/deletion-secret-namespace:
+        f:finalizers:
+          .:
+          v:"snapshot.storage.kubernetes.io/volumesnapshotcontent-bound-protection":
+      f:spec:
+        .:
+        f:deletionPolicy:
+        f:driver:
+        f:source:
+          .:
+          f:volumeHandle:
+        f:volumeSnapshotClassName:
+        f:volumeSnapshotRef:
+          .:
+          f:apiVersion:
+          f:kind:
+          f:name:
+          f:namespace:
+          f:resourceVersion:
+          f:uid:
+    Manager:      snapshot-controller
+    Operation:    Update
+    Time:         2022-12-07T03:17:14Z
+    API Version:  snapshot.storage.k8s.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        .:
+        f:creationTime:
+        f:readyToUse:
+        f:restoreSize:
+        f:snapshotHandle:
+    Manager:         csi-snapshotter
+    Operation:       Update
+    Time:            2022-12-07T03:17:16Z
+  Resource Version:  176224
+  UID:               3c5948cd-7874-45d0-b93c-f2548d1ea612
+Spec:
+  Deletion Policy:  Delete
+  Driver:           rook-ceph.rbd.csi.ceph.com
+  Source:
+    Volume Handle:             0001-0009-rook-ceph-0000000000000002-e537da68-7535-11ed-b76e-d6decc20daf2
+  Volume Snapshot Class Name:  csi-rbdplugin-snapclass
+  Volume Snapshot Ref:
+    API Version:       snapshot.storage.k8s.io/v1beta1
+    Kind:              VolumeSnapshot
+    Name:              rbd-pvc-snapshot
+    Namespace:         default
+    Resource Version:  176210
+    UID:               df031985-0595-42c3-914c-ced6c8721d48
+Status:
+  Creation Time:    1670383035549849738
+  Ready To Use:     true
+  Restore Size:     4294967296
+  Snapshot Handle:  0001-0009-rook-ceph-0000000000000002-a5dce5bf-75dd-11ed-b76e-d6decc20daf2
+Events:             <none>
+```
+
+特别关注上述输出中的`Volume Handle:`和`Snapshot Handle:`的值
+
+
+
+在dashboard中进行查看
+
+![image-20221207113601853](README.assets/image-20221207113601853.png)
+
+
+
+## 快照恢复和校验
+
+设置快照配置
+
+```bash
+ nano pvc-restore.yaml
+```
+
+
+
+```bash
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rbd-pvc-restore
+spec:
+  storageClassName: rook-ceph-block
+  dataSource:
+    name: rbd-pvc-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi #容量不得小于原始pvc
+```
+
+
+
+恢复快照
+
+```bash
+kubectl apply -f pvc-restore.yaml
+```
+
+
+
+查看恢复的快照的pvc
+
+```
+kubectl get pvc
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl get pvc
+NAME              STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+mysql-pv-claim    Bound    pvc-1b7011a4-e4a4-4018-a61f-1a9fc58e127d   4Gi        RWO            rook-ceph-block   20h
+rbd-pvc-restore   Bound    pvc-5a2a3d4a-f7b1-4013-9354-8f1f163c4f98   4Gi        RWO            rook-ceph-block   40s
+```
+
+
+
+创建数据验证工作负载
+
+```bash
+ nano testpod.yaml
+```
+
+
+
+```yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: check-snapshot-restore
+spec:
+  selector:
+    matchLabels:
+      app: check 
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: check 
+    spec:
+      containers:
+      - image: alpine:3.8
+        name: check
+        command:
+        - sh
+        - -c
+        - sleep 36000
+        volumeMounts:
+        - name: check-mysql-persistent-storage
+          mountPath: /mnt
+      volumes:
+      - name: check-mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: rbd-pvc-restore 
+```
+
+
+
+```bash
+kubectl apply -f testpod.yaml
+```
+
+
+
+验证数据
+
+```bash
+ kubectl get pod 
+```
+
+
+
+```bash
+kubectl exec -it check-snapshot-restore-6df758bdd6-2jl95 -- cat /mnt/test_snapshot/haha.txt
+```
+
+
+
+```bash
+root@node1:~/rook/cluster/examples/kubernetes/ceph/csi/rbd# kubectl exec -it check-snapshot-restore-6df758bdd6-2jl95 -- cat /mnt/test_snapshot/haha.txt
+test for snapshot from cloudzun
+```
+
