@@ -2306,3 +2306,283 @@ Events:                <none>
 
 
 
+# 部署Longhorn块存储解决方案
+
+
+
+安装longhorn
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.2.4/deploy/longhorn.yaml
+```
+
+
+
+将longhorn设置为默认存储类
+
+````bash
+kubectl patch storageclass longhorn -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+````
+
+
+
+确认存储类型
+
+```bash
+kubectl get sc
+```
+
+
+
+```bash
+root@node1:~# kubectl get sc
+NAME                 PROVISIONER          RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+longhorn (default)   driver.longhorn.io   Delete          Immediate           true                   4h13m
+
+```
+
+
+
+检查longhorn安装情况
+
+```bash
+kubectl get pod -n longhorn-system
+```
+
+
+
+```bash
+root@node1:~# kubectl get pod -n longhorn-system
+NAME                                        READY   STATUS    RESTARTS       AGE
+csi-attacher-6454556647-cw4jc               1/1     Running   0              4h8m
+csi-attacher-6454556647-gvjk8               1/1     Running   0              4h8m
+csi-attacher-6454556647-vc7ws               1/1     Running   0              4h8m
+csi-provisioner-869bdc4b79-r5v8j            1/1     Running   0              4h8m
+csi-provisioner-869bdc4b79-rn9zp            1/1     Running   0              4h8m
+csi-provisioner-869bdc4b79-v7kc9            1/1     Running   0              4h8m
+csi-resizer-6d8cf5f99f-69kdl                1/1     Running   0              4h8m
+csi-resizer-6d8cf5f99f-vwn4c                1/1     Running   0              4h8m
+csi-resizer-6d8cf5f99f-xlcws                1/1     Running   0              4h8m
+csi-snapshotter-588457fcdf-77h4k            1/1     Running   0              4h8m
+csi-snapshotter-588457fcdf-fpkjf            1/1     Running   0              4h8m
+csi-snapshotter-588457fcdf-jxdrs            1/1     Running   0              4h8m
+engine-image-ei-4dbdb778-58sx7              1/1     Running   0              4h9m
+engine-image-ei-4dbdb778-9c6mr              1/1     Running   0              4h9m
+engine-image-ei-4dbdb778-csgdl              1/1     Running   0              4h9m
+instance-manager-e-46afa502                 1/1     Running   0              4h9m
+instance-manager-e-d020b8c8                 1/1     Running   0              4h9m
+instance-manager-e-f8a6153d                 1/1     Running   0              4h9m
+instance-manager-r-263a334e                 1/1     Running   0              4h8m
+instance-manager-r-85b971e6                 1/1     Running   0              4h8m
+instance-manager-r-a4c3d8b4                 1/1     Running   0              4h9m
+longhorn-csi-plugin-hv8qf                   2/2     Running   0              4h8m
+longhorn-csi-plugin-jm7kv                   2/2     Running   0              4h8m
+longhorn-csi-plugin-t9z4k                   2/2     Running   0              4h8m
+longhorn-driver-deployer-7c85dc8c69-wlsf6   1/1     Running   0              4h9m
+longhorn-manager-h88kx                      1/1     Running   1 (4h9m ago)   4h9m
+longhorn-manager-zf945                      1/1     Running   0              4h9m
+longhorn-manager-zwjpw                      1/1     Running   0              4h9m
+longhorn-ui-6dcd69998-9rscr                 1/1     Running   0              4h9m
+```
+
+
+
+```bash
+kubectl get svc -n longhorn-system
+```
+
+
+
+```
+root@node1:~# kubectl get svc -n longhorn-system
+NAME                       TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+csi-attacher               ClusterIP   10.105.33.144    <none>        12345/TCP      4h9m
+csi-provisioner            ClusterIP   10.106.35.240    <none>        12345/TCP      4h9m
+csi-resizer                ClusterIP   10.101.232.11    <none>        12345/TCP      4h9m
+csi-snapshotter            ClusterIP   10.107.169.238   <none>        12345/TCP      4h9m
+longhorn-backend           ClusterIP   10.100.136.167   <none>        9500/TCP       4h11m
+longhorn-engine-manager    ClusterIP   None             <none>        <none>         4h11m
+longhorn-frontend          NodePort    10.97.31.129     <none>        80:30210/TCP   4h11m
+longhorn-replica-manager   ClusterIP   None             <none>        <none>         4h11m
+```
+
+
+
+将longhorn UI发布到nodeport 30210
+
+```bash
+kubectl patch svc -n longhorn-system longhorn-frontend  -p '{"spec":{"type": "NodePort"}}'
+kubectl patch service longhorn-frontend --namespace=longhorn-system --type='json' --patch='[{"op": "replace", "path": "/spec/ports/0/nodePort", "value":30210}]'
+```
+
+
+
+
+
+# 可选:创建NFS存储类(适用于RWX场景)
+
+## 安装NFS
+
+在每台机器上都安装nfs组件
+
+```bash
+apt install -y nfs-kernel-server
+```
+
+
+
+选择node01作为nfs服务器, 创建共享目录
+
+```bash
+mkdir /data
+```
+
+
+
+设置共享权限
+
+```bash
+chmod 777 -R /data
+```
+
+
+
+创建实验用目录
+
+```bash
+mkdir /data/mysql
+```
+
+
+
+编辑配置文件
+
+```bash
+nano /etc/exports
+```
+
+在配置文件最后一行增加: `/data *(rw,no_root_squash)`
+
+
+
+重启服务（如果节点重启之后，共享丢失，请重做此步）
+
+```bash
+systemctl restart nfs-server
+```
+
+
+
+设置开机自启
+
+```bash
+systemctl enable nfs-server
+```
+
+
+
+在其他节点上进行测试
+
+```bash
+showmount -e  node1
+```
+
+
+
+克隆实验脚本
+
+```bash
+git clone https://github.com/cloudzun/k8slab/
+
+cd k8slab/
+
+git branch -a
+
+git checkout v1.23
+```
+
+
+
+## 实现NFS存储类
+
+安装NFS CSI，进入csi文件夹
+
+```bash
+cd csi
+
+kubectl apply -f ./
+```
+
+
+
+查看csi对应pod
+
+```bash
+kubectl get pod -n kube-system -o wide | grep csi
+```
+
+ 
+
+```bash
+root@node1:~# kubectl get pod -n kube-system -o wide | grep csi
+csi-nfs-controller-59fc979848-56q75       3/3     Running   0             49m    192.168.1.232    node2   <none>           <none>
+csi-nfs-controller-59fc979848-fjq2t       3/3     Running   0             49m    192.168.1.233    node3   <none>           <none>
+csi-nfs-node-4djbg                        3/3     Running   0             49m    192.168.1.231    node1   <none>           <none>
+csi-nfs-node-pgmfb                        3/3     Running   0             49m    192.168.1.232    node2   <none>           <none>
+csi-nfs-node-wg7pq                        3/3     Running   0             49m    192.168.1.233    node3   <none>           <none>
+```
+
+ 等待csi-nfs相关pod就绪之后再进行后续步骤
+
+
+
+创建StorageClass定义文件 （需要替换NFS服务器ip地址）
+
+```bash
+nano nfs-sc.yaml
+```
+
+
+
+```yaml
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-csi
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: node1 # 指定nfs服务器地址或者名称
+  share: /data
+reclaimPolicy: Retain  # only retain is supported
+volumeBindingMode: Immediate
+mountOptions:
+  - hard
+  - nfsvers=4.1
+```
+
+
+
+创建SC 
+
+```bash
+kubectl apply -f nfs-sc.yaml
+```
+
+
+
+查看SC
+
+```bash
+kubectl get sc -o wide
+```
+
+
+
+```bash
+root@node1:~# kubectl get sc -o wide
+NAME                 PROVISIONER          RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+longhorn (default)   driver.longhorn.io   Delete          Immediate           true                   6h26m
+nfs-csi              nfs.csi.k8s.io       Retain          Immediate           false                  51m
+```
+
